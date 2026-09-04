@@ -232,9 +232,6 @@ struct SttView: View {
     @State private var lang = Lang.shared
     private var s: Strings { lang.t }
     @State private var showHistory = false
-    #if os(macOS)
-        @State private var confirmUninstall = false
-    #endif
     @FocusState private var editing: Bool
 
     private var hasText: Bool { !t.text.isEmpty && t.phase == .idle }
@@ -335,7 +332,7 @@ struct SttView: View {
 
             #if os(macOS)
                 Menu {
-                    Button(s.uninstall, role: .destructive) { confirmUninstall = true }
+                    Button(s.uninstall, role: .destructive) { Uninstaller.confirm(s) }
                 } label: {
                     Image(systemName: "ellipsis.circle")
                         .font(.system(size: 20))
@@ -361,15 +358,6 @@ struct SttView: View {
             #endif
         }
         .frame(maxWidth: 640)
-        #if os(macOS)
-            .alert(s.uninstallTitle, isPresented: $confirmUninstall) {
-                Button(s.uninstallConfirm, role: .destructive) { Uninstaller.run() }
-                Button(s.cancel, role: .cancel) {}
-            } message: {
-                let size = ByteCountFormatter.string(fromByteCount: Uninstaller.dataSize(), countStyle: .file)
-                Text(s.uninstallMessage(size))
-            }
-        #endif
     }
 
     /// EN / FR. The initial value follows the system language, English otherwise.

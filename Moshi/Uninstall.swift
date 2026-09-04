@@ -37,15 +37,38 @@
             return total
         }
 
+        /// Asks with an app-modal AppKit alert. A SwiftUI `.alert` inside the menu bar
+        /// panel closes with the panel and its button action never runs.
+        @MainActor
+        static func confirm(_ s: Strings) {
+            let alert = NSAlert()
+            alert.messageText = s.uninstallTitle
+            alert.informativeText = s.uninstallMessage(
+                ByteCountFormatter.string(fromByteCount: dataSize(), countStyle: .file))
+            alert.alertStyle = .critical
+            alert.addButton(withTitle: s.uninstallConfirm).hasDestructiveAction = true
+            alert.addButton(withTitle: s.cancel)
+            NSApp.activate(ignoringOtherApps: true)
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            run()
+        }
+
         /// Deletes the data, reveals the app bundle in the Finder, quits.
+        @MainActor
         static func run() {
             let fm = FileManager.default
             for url in dataURLs where fm.fileExists(atPath: url.path) {
-                do { try fm.removeItem(at: url) } catch { print("could not delete \(url.path): \(error)") }
+                do {
+                    try fm.removeItem(at: url)
+                    NSLog("uninstall: deleted %@", url.path)
+                } catch {
+                    NSLog("uninstall: could not delete %@: %@", url.path, String(describing: error))
+                }
             }
             // The sandbox forbids trashing our own bundle in /Applications: hand over to the Finder.
             NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL])
-            NSApplication.shared.terminate(nil)
+            // Leave the current event (menu action / modal) before terminating.
+            DispatchQueue.main.async { NSApp.terminate(nil) }
         }
     }
 #endif
