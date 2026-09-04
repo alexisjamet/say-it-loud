@@ -294,10 +294,7 @@ struct SttView: View {
 
             if !hasText && !showHistory { Spacer() }
 
-            HStack(alignment: .bottom, spacing: 12) {
-                privacyNote
-                languageSwitch
-            }
+            privacyNote
         }
         .padding(16)
         .environment(\.locale, lang.language.locale)
@@ -330,46 +327,31 @@ struct SttView: View {
             .disabled(t.phase != .idle)
             .accessibilityLabel(showHistory ? s.closeHistory : s.history)
 
-            #if os(macOS)
-                Menu {
+            Menu {
+                Picker(s.language, selection: $lang.language) {
+                    ForEach(AppLanguage.allCases) { Text($0.name).tag($0) }
+                }
+                .pickerStyle(.inline)
+                #if os(macOS)
+                    Divider()
                     Button(s.uninstall, role: .destructive) { Uninstaller.confirm(s) }
-                } label: {
-                    Image(systemName: "ellipsis.circle")
-                        .font(.system(size: 20))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 36, height: 36)
-                }
-                .menuStyle(.button)
-                .buttonStyle(.plain)
-                .menuIndicator(.hidden)
-                .disabled(t.phase != .idle)
-                .accessibilityLabel(s.more)
-
-                Button(action: { NSApplication.shared.terminate(nil) }) {
-                    Image(systemName: "power")
-                        .font(.system(size: 20))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 36, height: 36)
-                }
-                .buttonStyle(.plain)
-                .keyboardShortcut("q")
-                .help(s.quitHelp)
-                .accessibilityLabel(s.quit)
-            #endif
+                    Divider()
+                    Button(s.quit) { NSApplication.shared.terminate(nil) }
+                        .keyboardShortcut("q")
+                #endif
+            } label: {
+                Image(systemName: "ellipsis.circle")
+                    .font(.system(size: 20))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 36, height: 36)
+            }
+            .menuStyle(.button)
+            .buttonStyle(.plain)
+            .menuIndicator(.hidden)
+            .disabled(t.phase != .idle)
+            .accessibilityLabel(s.more)
         }
         .frame(maxWidth: 640)
-    }
-
-    /// EN / FR. The initial value follows the system language, English otherwise.
-    private var languageSwitch: some View {
-        Picker(s.language, selection: $lang.language) {
-            ForEach(AppLanguage.allCases) { Text($0.short).tag($0) }
-        }
-        .pickerStyle(.segmented)
-        .labelsHidden()
-        .controlSize(.small)
-        .fixedSize()
-        .accessibilityLabel(s.language)
     }
 
     /// Everything happens on this device; say it, since users assume the opposite.

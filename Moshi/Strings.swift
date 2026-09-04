@@ -8,7 +8,8 @@ enum AppLanguage: String, CaseIterable, Identifiable {
     case english = "en"
     case french = "fr"
     var id: String { rawValue }
-    var short: String { self == .french ? "FR" : "EN" }
+    /// Shown in its own language, so it stays readable whichever one is active.
+    var name: String { self == .french ? "Français" : "English" }
     var locale: Locale { Locale(identifier: rawValue) }
 
     /// What the system is set to, if we support it.
@@ -73,7 +74,6 @@ struct Strings {
     var closeHistory: String
     var more: String
     var quit: String
-    var quitHelp: String
     var record: String
     var stop: String
     var delete: String
@@ -114,8 +114,7 @@ struct Strings {
         history: "History",
         closeHistory: "Close history",
         more: "More",
-        quit: "Quit",
-        quitHelp: "Quit Say It Loud (⌘Q)",
+        quit: "Quit Say It Loud",
         record: "Record",
         stop: "Stop",
         delete: "Delete",
@@ -154,8 +153,7 @@ struct Strings {
         history: "Historique",
         closeHistory: "Fermer l'historique",
         more: "Plus",
-        quit: "Quitter",
-        quitHelp: "Quitter Say It Loud (⌘Q)",
+        quit: "Quitter Say It Loud",
         record: "Enregistrer",
         stop: "Arrêter",
         delete: "Supprimer",
