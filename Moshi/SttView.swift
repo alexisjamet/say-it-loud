@@ -230,6 +230,9 @@ final class Transcriber {
 struct SttView: View {
     @State private var t = Transcriber.shared
     @State private var showHistory = false
+    #if os(macOS)
+        @State private var confirmUninstall = false
+    #endif
     @FocusState private var editing: Bool
 
     private var hasText: Bool { !t.text.isEmpty && t.phase == .idle }
@@ -325,6 +328,20 @@ struct SttView: View {
             .accessibilityLabel(showHistory ? "Close history" : "History")
 
             #if os(macOS)
+                Menu {
+                    Button("Uninstall Say It Loud…", role: .destructive) { confirmUninstall = true }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                        .font(.system(size: 20))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 36, height: 36)
+                }
+                .menuStyle(.button)
+                .buttonStyle(.plain)
+                .menuIndicator(.hidden)
+                .disabled(t.phase != .idle)
+                .accessibilityLabel("More")
+
                 Button(action: { NSApplication.shared.terminate(nil) }) {
                     Image(systemName: "power")
                         .font(.system(size: 20))
@@ -338,6 +355,17 @@ struct SttView: View {
             #endif
         }
         .frame(maxWidth: 640)
+        #if os(macOS)
+            .alert("Uninstall Say It Loud?", isPresented: $confirmUninstall) {
+                Button("Delete and Quit", role: .destructive) { Uninstaller.run() }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                let size = ByteCountFormatter.string(fromByteCount: Uninstaller.dataSize(), countStyle: .file)
+                Text(
+                    "This deletes the speech model and all your transcripts (\(size)), then quits and shows the app in the Finder so you can move it to the Trash."
+                )
+            }
+        #endif
     }
 
     /// Everything happens on this device; say it, since users assume the opposite.
