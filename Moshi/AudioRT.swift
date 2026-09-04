@@ -34,7 +34,19 @@ class MicrophoneCapture {
         channel = ThreadSafeChannel()
     }
 
-    func startCapturing() {
+    @discardableResult
+    func startCapturing() -> Bool {
+        #if os(iOS)
+            // Without an active record-capable session the input node reports a 0 Hz format.
+            do {
+                let session = AVAudioSession.sharedInstance()
+                try session.setCategory(.record, mode: .default)
+                try session.setActive(true)
+            } catch {
+                print("failed to activate the audio session: \(error)")
+                return false
+            }
+        #endif
         let inputNode = audioEngine.inputNode
         // Setting the voice mode on macos causes weird hangs of the microphone
         // so we discard it for now.
@@ -60,7 +72,7 @@ class MicrophoneCapture {
                 interleaved: false)
         else {
             print("Could not create target format")
-            return
+            return false
         }
 
         // Resample the buffer to match the desired format
@@ -92,9 +104,17 @@ class MicrophoneCapture {
             audioEngine.prepare()
             try audioEngine.start()
             print("Microphone capturing started at 24kHz, mono")
+            return true
         } catch {
             print("Error starting audio engine: \(error)")
+            return false
         }
+    }
+
+    /// Stop the engine and wake up a blocked `receive()` with an empty buffer.
+    func close() {
+        stopCapturing()
+        channel.send([])
     }
 
     private func processAudioBuffer(buffer: AVAudioPCMBuffer) {

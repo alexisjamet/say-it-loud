@@ -50,6 +50,13 @@ enum ModelSelect: String, CaseIterable, Identifiable {
 }
 
 struct ContentView: View {
+    var body: some View {
+        SttView()
+    }
+}
+
+/// The original multi-model demo screen, kept for experimentation.
+struct DemoContentView: View {
     @State var model = Evaluator()
     @State var selectedModel: ModelSelect = .mimi
     @State var sendToSpeaker = false
@@ -124,6 +131,9 @@ class Evaluator {
 
     var loadState = LoadState.idle
 
+    /// Bytes received / expected for the file currently downloading, nil otherwise.
+    var download: (done: Int64, total: Int64)? = nil
+
     func downloadFromHub(id: String, filename: String) async throws -> URL {
         guard
             let downloadDir = FileManager.default.urls(
@@ -139,14 +149,17 @@ class Evaluator {
             print("using cached file \(targetURL.path)")
             return targetURL
         }
-        let url = try await api.snapshot(from: repo, matching: filename) { progress in
-            Task { @MainActor in
-                self.progress = progress
-            }
+        // The Hub client only reports progress per file; stream the bytes ourselves so
+        // a 1 GB checkpoint shows a moving bar instead of 0 % then 100 %.
+        let remote = URL(string: "https://huggingface.co/\(id)/resolve/main/\(filename)")!
+        try FileManager.default.createDirectory(
+            at: targetURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        download = (0, 0)
+        defer { download = nil }
+        try await FileDownloader.download(remote, to: targetURL) { done, total in
+            Task { @MainActor in self.download = (done, total) }
         }
-        // TODO: also set this back to nil on errors.
-        self.progress = nil
-        return url.appending(path: filename)
+        return targetURL
     }
 
     func loadVocab(_ cfg: LmConfig) async throws -> [Int: String] {
@@ -164,7 +177,7 @@ class Evaluator {
         return dictionary
     }
 
-    func makeMoshi(_ url: URL, _ cfg: LmConfig) throws -> LM {
+    nonisolated static func makeMoshi(_ url: URL, _ cfg: LmConfig) throws -> LM {
         let weights = try loadArrays(url: url)
         let parameters = ModuleParameters.unflattened(weights)
         let model = LM(cfg, bSize: 1)
@@ -208,13 +221,16 @@ class Evaluator {
         return model
     }
 
+    static let mimiFilename = "tokenizer-dbaa9758-checkpoint125.safetensors"
+
     func makeMimi(numCodebooks: Int) async throws -> Mimi {
+        let url = try await downloadFromHub(id: "lmz/moshi-swift", filename: Self.mimiFilename)
+        return try Self.buildMimi(url, numCodebooks: numCodebooks)
+    }
+
+    nonisolated static func buildMimi(_ url: URL, numCodebooks: Int) throws -> Mimi {
         let cfg = MimiConfig.mimi_2024_07(numCodebooks: numCodebooks)
         let model = Mimi(cfg, bSize: 1)
-
-        let url = try await downloadFromHub(
-            id: "lmz/moshi-swift",
-            filename: "tokenizer-dbaa9758-checkpoint125.safetensors")
         let origWeights = try loadArrays(url: url)
         var weights: [String: MLXArray] = [:]
         for (var key, var weight) in origWeights {
@@ -569,26 +585,30 @@ struct AsrModel: Model {
     var asr: ASR
 
     init(_ ev: Evaluator, _ cb: Callbacks) async throws {
-        await ev.setModelInfo("building model")
         let url: URL
         let localURL = Bundle.main.url(forResource: "stt-model", withExtension: "safetensors")
         switch localURL {
         case .none:
+            await ev.setModelInfo("downloading model")
             url = try await ev.downloadFromHub(
                 id: "lmz/moshi-swift", filename: "moshi-70f8f0ea@500.q8.safetensors")
         case .some(let localURL):
             url = localURL
         }
+        let mimiURL = try await ev.downloadFromHub(
+            id: "lmz/moshi-swift", filename: Evaluator.mimiFilename)
         let cfg = LmConfig.asr1b()
-        let moshi = try await ev.makeMoshi(url, cfg)
-        let mimi = try await ev.makeMimi(numCodebooks: 32)
-        await ev.setModelInfo("model built")
         let vocab = try await ev.loadVocab(cfg)
-        await ev.setModelInfo("warming up mimi")
-        mimi.warmup()
-        await ev.setModelInfo("warming up moshi")
-        moshi.warmup()
-        await ev.setModelInfo("done warming up")
+        await ev.setModelInfo("building model")
+        // Loading ~1.4 GB of weights and warming up takes seconds: keep the UI responsive.
+        let (moshi, mimi) = try await Task.detached(priority: .userInitiated) {
+            let moshi = try Evaluator.makeMoshi(url, cfg)
+            let mimi = try Evaluator.buildMimi(mimiURL, numCodebooks: 32)
+            mimi.warmup()
+            moshi.warmup()
+            return (moshi, mimi)
+        }.value
+        await ev.setModelInfo("ready")
         self.asr = ASR(moshi, mimi, vocab: vocab, cb: cb)
     }
 
@@ -629,7 +649,7 @@ struct MoshiModel: Model {
         case .some(let localURL):
             url = localURL
         }
-        self.moshi = try await ev.makeMoshi(url, cfg)
+        self.moshi = try await Evaluator.makeMoshi(url, cfg)
         await ev.setModelName(url.lastPathComponent)
         self.mimi = try await ev.makeMimi(numCodebooks: 16)
         await ev.setModelInfo("model built")

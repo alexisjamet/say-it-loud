@@ -3,6 +3,9 @@
 // LICENSE file in the root directory of this source tree.
 
 import AVFoundation
+#if os(macOS)
+    import Carbon.HIToolbox
+#endif
 import Foundation
 import SwiftUI
 
@@ -26,27 +29,47 @@ func requestMicrophoneAccess() {
 @main
 struct moshiApp: App {
     @Environment(\.scenePhase) var scenePhase
+    #if os(macOS)
+        @State private var transcriber = Transcriber.shared
+        // ⌘F6 anywhere: start recording, or stop and copy the transcript.
+        private static let hotKey = HotKey(keyCode: kVK_F6, modifiers: cmdKey) {
+            Task { @MainActor in Transcriber.shared.hotKeyToggle() }
+        }
+    #endif
 
     init() {
         requestMicrophoneAccess()
+        #if os(macOS)
+            _ = Self.hotKey
+            Notifier.shared.setup()
+        #endif
     }
 
-    var body: some Scene {
-        WindowGroup {
-            ContentView()
-                .environment(DeviceStat())
-        }
-#if os(iOS)
-        .onChange(of: scenePhase) { (phase) in
-            switch phase {
-            case .active:
-                // In iOS 13+, idle timer needs to be set in scene to override default
-                UIApplication.shared.isIdleTimerDisabled = true
-            case .inactive: break
-            case .background: break
-            @unknown default: print("ScenePhase: unexpected state")
+    #if os(macOS)
+        private var menuBarSymbol: String {
+            switch transcriber.phase {
+            case .recording: "waveform.circle.fill"
+            case .loading, .finishing: "ellipsis.circle"
+            case .idle: "mic.fill"
             }
         }
-#endif
+    #endif
+
+    var body: some Scene {
+        #if os(macOS)
+            // Lives in the menu bar: no window, no Dock icon (LSUIElement is set for macOS).
+            MenuBarExtra {
+                SttView()
+                    .frame(width: 380, height: 520)
+            } label: {
+                Image(systemName: menuBarSymbol)
+            }
+            .menuBarExtraStyle(.window)
+        #else
+            WindowGroup {
+                ContentView()
+                    .environment(DeviceStat())
+            }
+        #endif
     }
 }
