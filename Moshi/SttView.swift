@@ -51,7 +51,7 @@ final class Transcriber {
         switch phase {
         case .idle:
             start()
-            notify("Recording", "Say It Loud is listening. Press ⌘F6 again to stop and copy.")
+            notify(Lang.shared.t.recording, Lang.shared.t.recordingBody)
         case .recording:
             copyWhenDone = true
             stop()
@@ -109,7 +109,7 @@ final class Transcriber {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(t, forType: .string)
         #endif
-        flash("Copied")
+        flash(Lang.shared.t.copied)
     }
 
     private func flash(_ s: String) {
@@ -122,7 +122,7 @@ final class Transcriber {
 
     private func start() {
         phase = .loading
-        status = "Loading model…"
+        status = Lang.shared.t.loadingModel
         text = ""
         current = nil
         Task { await run() }
@@ -131,7 +131,7 @@ final class Transcriber {
     private func stop() {
         guard phase == .recording else { return }
         phase = .finishing
-        status = "Finishing…"
+        status = Lang.shared.t.finishing
         // Closing the mic queues an empty sentinel *after* everything it captured:
         // the loop keeps transcribing until it reaches it, so nothing said is dropped.
         mic?.close()
@@ -147,24 +147,24 @@ final class Transcriber {
                 _ = await AVAudioApplication.requestRecordPermission()
             }
             guard AVAudioApplication.shared.recordPermission == .granted else {
-                status = "Microphone access denied — allow it in Settings"
+                status = Lang.shared.t.micDenied
                 return
             }
         #endif
         do {
             let state = try await ev.load(.asr)
             guard let model = await state.perform({ $0 as? AsrModel }) else {
-                status = "Unexpected model"
+                status = Lang.shared.t.unexpectedModel
                 return
             }
             let mic = MicrophoneCapture()
             self.mic = mic
             guard mic.startCapturing() else {
-                status = "Could not open the microphone"
+                status = Lang.shared.t.micFailed
                 return
             }
             phase = .recording
-            status = "Listening"
+            status = Lang.shared.t.listening
             setKeepAwake(true)
 
             let transcript = await runCaptureLoop(model.asr, mic: mic)
@@ -174,15 +174,15 @@ final class Transcriber {
             if copyWhenDone {
                 copyWhenDone = false
                 if text.isEmpty {
-                    status = "Nothing heard"
-                    notify("Nothing heard", "No speech was detected, the clipboard was left unchanged.")
+                    status = Lang.shared.t.nothingHeard
+                    notify(Lang.shared.t.nothingHeard, Lang.shared.t.nothingHeardBody)
                 } else {
                     copy()
-                    notify("Copied to clipboard", String(text.prefix(140)))
+                    notify(Lang.shared.t.copiedToClipboard, String(text.prefix(140)))
                 }
             }
         } catch {
-            status = "Failed: \(error)"
+            status = Lang.shared.t.failed("\(error)")
         }
         mic = nil
     }
@@ -229,6 +229,8 @@ final class Transcriber {
 
 struct SttView: View {
     @State private var t = Transcriber.shared
+    @State private var lang = Lang.shared
+    private var s: Strings { lang.t }
     @State private var showHistory = false
     #if os(macOS)
         @State private var confirmUninstall = false
@@ -267,7 +269,7 @@ struct SttView: View {
                                 .padding(10)
                         }
                         .buttonStyle(.plain)
-                        .accessibilityLabel("Clear")
+                        .accessibilityLabel(s.clear)
                     }
                     .focused($editing)
                     .frame(maxWidth: 640, maxHeight: .infinity)
@@ -277,7 +279,7 @@ struct SttView: View {
 
             if !showHistory {
             HStack(spacing: 24) {
-                sideButton("doc.on.doc", label: "Copy", enabled: hasText) { t.copy() }
+                sideButton("doc.on.doc", label: s.copy, enabled: hasText) { t.copy() }
                 micButton
                 ShareLink(item: t.text.trimmingCharacters(in: .whitespacesAndNewlines)) {
                     sideIcon("square.and.arrow.up")
@@ -285,7 +287,7 @@ struct SttView: View {
                 .buttonStyle(.plain)
                 .disabled(!hasText)
                 .opacity(hasText ? 1 : 0.3)
-                .accessibilityLabel("Share")
+                .accessibilityLabel(s.share)
             }
 
             statusLine
@@ -295,9 +297,13 @@ struct SttView: View {
 
             if !hasText && !showHistory { Spacer() }
 
-            privacyNote
+            HStack(alignment: .bottom, spacing: 12) {
+                privacyNote
+                languageSwitch
+            }
         }
         .padding(16)
+        .environment(\.locale, lang.language.locale)
         .onChange(of: t.text) { _, _ in t.textEdited() }
         #if os(iOS)
             .task { t.startOnLaunch() }
@@ -325,11 +331,11 @@ struct SttView: View {
             }
             .buttonStyle(.plain)
             .disabled(t.phase != .idle)
-            .accessibilityLabel(showHistory ? "Close history" : "History")
+            .accessibilityLabel(showHistory ? s.closeHistory : s.history)
 
             #if os(macOS)
                 Menu {
-                    Button("Uninstall Say It Loud…", role: .destructive) { confirmUninstall = true }
+                    Button(s.uninstall, role: .destructive) { confirmUninstall = true }
                 } label: {
                     Image(systemName: "ellipsis.circle")
                         .font(.system(size: 20))
@@ -340,7 +346,7 @@ struct SttView: View {
                 .buttonStyle(.plain)
                 .menuIndicator(.hidden)
                 .disabled(t.phase != .idle)
-                .accessibilityLabel("More")
+                .accessibilityLabel(s.more)
 
                 Button(action: { NSApplication.shared.terminate(nil) }) {
                     Image(systemName: "power")
@@ -350,22 +356,32 @@ struct SttView: View {
                 }
                 .buttonStyle(.plain)
                 .keyboardShortcut("q")
-                .help("Quit Say It Loud (⌘Q)")
-                .accessibilityLabel("Quit")
+                .help(s.quitHelp)
+                .accessibilityLabel(s.quit)
             #endif
         }
         .frame(maxWidth: 640)
         #if os(macOS)
-            .alert("Uninstall Say It Loud?", isPresented: $confirmUninstall) {
-                Button("Delete and Quit", role: .destructive) { Uninstaller.run() }
-                Button("Cancel", role: .cancel) {}
+            .alert(s.uninstallTitle, isPresented: $confirmUninstall) {
+                Button(s.uninstallConfirm, role: .destructive) { Uninstaller.run() }
+                Button(s.cancel, role: .cancel) {}
             } message: {
                 let size = ByteCountFormatter.string(fromByteCount: Uninstaller.dataSize(), countStyle: .file)
-                Text(
-                    "This deletes the speech model and all your transcripts (\(size)), then quits and shows the app in the Finder so you can move it to the Trash."
-                )
+                Text(s.uninstallMessage(size))
             }
         #endif
+    }
+
+    /// EN / FR. The initial value follows the system language, English otherwise.
+    private var languageSwitch: some View {
+        Picker(s.language, selection: $lang.language) {
+            ForEach(AppLanguage.allCases) { Text($0.short).tag($0) }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .controlSize(.small)
+        .fixedSize()
+        .accessibilityLabel(s.language)
     }
 
     /// Everything happens on this device; say it, since users assume the opposite.
@@ -373,7 +389,7 @@ struct SttView: View {
         let compact = hasText || showHistory
         return HStack(alignment: .top, spacing: 6) {
             Image(systemName: "lock.shield")
-            Text("Everything stays on your device: the model and your transcripts are never uploaded, and no one else can access them.")
+            Text(s.privacy)
         }
         .font(compact ? .footnote : .callout)
         .foregroundStyle(.secondary)
@@ -407,7 +423,7 @@ struct SttView: View {
         }
         .buttonStyle(.plain)
         .disabled(t.isBusy)
-        .accessibilityLabel(recording ? "Stop" : "Record")
+        .accessibilityLabel(recording ? s.stop : s.record)
     }
 
     private func sideIcon(_ symbol: String) -> some View {
@@ -434,17 +450,17 @@ struct SttView: View {
                 if d.total > 0 {
                     ProgressView(value: Double(d.done), total: Double(d.total))
                         .frame(maxWidth: 260)
-                    Text("Downloading model — \(mb(d.done)) / \(mb(d.total)) MB")
+                    Text(s.downloading(mb(d.done), mb(d.total)))
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 } else {
                     ProgressView()
                         .frame(maxWidth: 260)
-                    Text("Connecting to Hugging Face…")
+                    Text(s.connecting)
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
-                Text("1.4 GB in total, downloaded once — depending on your connection this can take several minutes.")
+                Text(s.downloadHint)
                     .multilineTextAlignment(.center)
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
@@ -477,6 +493,8 @@ extension Color {
 }
 
 struct HistoryList: View {
+    @State private var lang = Lang.shared
+    private var s: Strings { lang.t }
     let store: HistoryStore
     let current: Transcript?
     let onOpen: (Transcript) -> Void
@@ -488,7 +506,7 @@ struct HistoryList: View {
                 Image(systemName: "clock.arrow.circlepath")
                     .font(.system(size: 36))
                     .foregroundStyle(.tertiary)
-                Text("No transcripts yet")
+                Text(s.noTranscripts)
                     .foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -516,17 +534,17 @@ struct HistoryList: View {
                                 .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
-                        .accessibilityLabel("Delete")
+                        .accessibilityLabel(s.delete)
                     }
                     .listRowBackground(item.id == current?.id ? Color.accentColor.opacity(0.12) : nil)
                     .swipeActions(edge: .trailing) {
                         Button(role: .destructive) { onDelete(item) } label: {
-                            Label("Delete", systemImage: "trash")
+                            Label(s.delete, systemImage: "trash")
                         }
                     }
                     .contextMenu {
                         Button(role: .destructive) { onDelete(item) } label: {
-                            Label("Delete", systemImage: "trash")
+                            Label(s.delete, systemImage: "trash")
                         }
                     }
                 }
