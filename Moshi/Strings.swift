@@ -45,6 +45,7 @@ final class Lang {
 /// Every user-facing text, in one place per language.
 struct Strings {
     let appName = "Say It Loud"
+    static let repository = URL(string: "https://github.com/alexisjamet/say-it-loud")!
 
     // Hands-free flow (⌘F6) and notifications
     var recording: String
@@ -90,6 +91,7 @@ struct Strings {
 
     var privacy: String
     var language: String
+    var sourceCode: String
 
     static let en = Strings(
         recording: "Recording",
@@ -127,7 +129,8 @@ struct Strings {
             "This deletes the speech model and all your transcripts (\($0)), then quits and shows the app in the Finder so you can move it to the Trash."
         },
         privacy: "Everything stays on your device: the model and your transcripts are never uploaded, and no one else can access them.",
-        language: "Language"
+        language: "Language",
+        sourceCode: "Source code on GitHub"
     )
 
     static let fr = Strings(
@@ -166,6 +169,7 @@ struct Strings {
             "Cela supprime le modèle vocal et toutes vos transcriptions (\($0)), puis quitte l'app et l'affiche dans le Finder pour que vous la mettiez à la corbeille."
         },
         privacy: "Tout reste sur votre appareil : le modèle et vos transcriptions ne sont jamais envoyés, et personne d'autre n'y a accès.",
-        language: "Langue"
+        language: "Langue",
+        sourceCode: "Code source sur GitHub"
     )
 }

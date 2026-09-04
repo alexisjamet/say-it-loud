@@ -332,6 +332,10 @@ struct SttView: View {
                     ForEach(AppLanguage.allCases) { Text($0.name).tag($0) }
                 }
                 .pickerStyle(.inline)
+                Divider()
+                Link(destination: Strings.repository) {
+                    Label(s.sourceCode, systemImage: "chevron.left.forwardslash.chevron.right")
+                }
                 #if os(macOS)
                     Divider()
                     Button(s.uninstall, role: .destructive) { Uninstaller.confirm(s) }
