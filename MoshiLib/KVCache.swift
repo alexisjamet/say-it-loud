@@ -116,8 +116,8 @@ class KVCacheSimple: KVCache, Evaluatable {
 }
 
 class RotatingKVCache: KVCache, Evaluatable {
-    let keys: MLXArray
-    let values: MLXArray
+    private(set) var keys: MLXArray
+    private(set) var values: MLXArray
     let maxSize: Int
     var offset: Int = 0
 
@@ -131,6 +131,13 @@ class RotatingKVCache: KVCache, Evaluatable {
         let t = keys.dim(2)
         if t > self.maxSize {
             fatalError("query to update with shape \(keys.shape) larger than maxSize \(maxSize)")
+        }
+        // The cache is created before the weights are loaded (and quantized), so its
+        // dtype is a guess: follow the model on first use, halving the footprint for
+        // bf16 models and keeping the attention in a single dtype.
+        if self.keys.dtype != keys.dtype {
+            self.keys = self.keys.asType(keys.dtype)
+            self.values = self.values.asType(values.dtype)
         }
         let currentOffset = self.offset % self.maxSize
         let tMax = min(self.maxSize, currentOffset + t)

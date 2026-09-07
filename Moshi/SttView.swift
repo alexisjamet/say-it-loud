@@ -29,18 +29,14 @@ final class Transcriber {
     private var mic: MicrophoneCapture?
     private var copyWhenDone = false
 
-    // 12.5 frames of 80 ms per second. The model expects a second of silence up
-    // front; it emits words ~0.5 s late, so two seconds of silence flush them out.
-    private let frameSize = 1920
-    private let prefixFrames = 13
-    private let flushFrames = 25
-
     var isBusy: Bool { phase == .loading || phase == .finishing }
     var download: (done: Int64, total: Int64)? { ev.download }
 
+    /// Mic button: a new take is appended to the text already in the editor, so a
+    /// transcript can be dictated in several recordings. The clear button starts over.
     func toggle() {
         switch phase {
-        case .idle: start()
+        case .idle: start(fresh: false)
         case .recording: stop()
         default: break
         }
@@ -50,7 +46,7 @@ final class Transcriber {
     func hotKeyToggle() {
         switch phase {
         case .idle:
-            start()
+            start(fresh: true)
             notify(Lang.shared.t.recording, Lang.shared.t.recordingBody)
         case .recording:
             copyWhenDone = true
@@ -62,7 +58,7 @@ final class Transcriber {
     /// iOS opens straight into a recording; the download/permission steps run first if needed.
     func startOnLaunch() {
         guard phase == .idle, text.isEmpty else { return }
-        start()
+        start(fresh: true)
     }
 
     /// Stops a recording in progress (e.g. when the app goes to the background).
@@ -120,11 +116,14 @@ final class Transcriber {
         }
     }
 
-    private func start() {
+    /// `fresh` drops the current text; otherwise the new take is appended to it.
+    private func start(fresh: Bool) {
         phase = .loading
         status = Lang.shared.t.loadingModel
-        text = ""
-        current = nil
+        if fresh {
+            text = ""
+            current = nil
+        }
         Task { await run() }
     }
 
@@ -167,9 +166,14 @@ final class Transcriber {
             status = Lang.shared.t.listening
             setKeepAwake(true)
 
-            let transcript = await runCaptureLoop(model.asr, mic: mic)
-            text = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !text.isEmpty { current = history.add(text) }
+            let heard = await runCaptureLoop(model.asr, mic: mic)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let previous = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            text = [previous, heard].filter { !$0.isEmpty }.joined(separator: " ")
+            if !text.isEmpty {
+                // An existing entry is updated in place by `textEdited()` when `text` changes.
+                if current == nil { current = history.add(text) }
+            }
             status = ""
             if copyWhenDone {
                 copyWhenDone = false
@@ -190,29 +194,21 @@ final class Transcriber {
     /// Runs the model on a dedicated thread: `mic.receive()` blocks, and MLX work
     /// should stay off the cooperative pool anyway.
     private func runCaptureLoop(_ asr: ASR, mic: MicrophoneCapture) async -> String {
-        let frameSize = self.frameSize
-        let prefixFrames = self.prefixFrames
-        let flushFrames = self.flushFrames
         return await withCheckedContinuation { cont in
             let thread = Thread {
-                var out = ""
-                let silence = MLXArray([Float](repeating: 0, count: frameSize))[.newAxis, .newAxis]
-                asr.reset()
-                for _ in 0..<prefixFrames {
-                    _ = asr.onPcmInput(silence)
-                }
+                // Restarts the model every minute or so: see `StreamingASR`.
+                let stream = StreamingASR(asr)
+                stream.start()
                 var step = 0
                 // Runs until the sentinel queued by `close()`, i.e. after the last captured buffer.
                 while let pcm = mic.receive(), !pcm.isEmpty {
-                    out += asr.onPcmInput(MLXArray(pcm)[.newAxis, .newAxis]).joined()
+                    stream.feed(pcm)
                     step += 1
                     if step % 128 == 0 { GPU.clearCache() }
                 }
-                for _ in 0..<flushFrames {
-                    out += asr.onPcmInput(silence).joined()
-                }
+                stream.finish()
                 GPU.clearCache()
-                cont.resume(returning: out)
+                cont.resume(returning: stream.text)
             }
             thread.name = "stt-capture"
             thread.qualityOfService = .userInteractive

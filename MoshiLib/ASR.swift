@@ -73,3 +73,126 @@ public class ASR {
         return tokens
     }
 }
+
+/// Long-form dictation on top of `ASR`.
+///
+/// The model keeps a 60 s attention window plus its own text stream as context. On
+/// continuous speech its output drifts after two to three minutes and eventually
+/// locks into a loop (the same character over and over) — Kyutai's PyTorch
+/// reference does the same, see delayed-streams-modeling issues #172 and #175.
+/// Every minute or so this wrapper waits for a short pause, drains the words still
+/// in flight with a little silence, and starts the model over, replaying the last
+/// seconds of audio (output muted) so it gets the speaker's voice back before new
+/// words arrive; a detected loop is cut out of the text and triggers an immediate
+/// restart.
+public final class StreamingASR {
+    public let frameSize = 1920  // 80 ms at 24 kHz, one Mimi frame
+    /// Silence fed before speech; the model expects some.
+    public var prefixFrames = 13
+    /// Silence fed at the end: words come out ~0.5 s late.
+    public var flushFrames = 25
+    /// Restart at the first pause once this many frames were seen since the last start...
+    public var restartAfter = 12 * 60
+    /// ...and no later than this, pause or not.
+    public var forceRestartAfter = 12 * 120
+    /// Consecutive quiet frames that count as a pause.
+    public var pauseFrames = 4
+    /// The same token this many times in a row is a loop, not speech.
+    public var loopLength = 8
+    /// Audio replayed after a restart, as context.
+    public var replayFrames = 36
+
+    public private(set) var text = ""
+    public private(set) var restarts = 0
+
+    private let asr: ASR
+    private let silence: MLXArray
+    private var pending: [Float] = []
+    private var steps = 0
+    private var quietFrames = 0
+    private var noiseFloor: Float = 1
+    private var lastToken = ""
+    private var repeats = 0
+    private var recent: [[Float]] = []
+    private var muted = false
+
+    public init(_ asr: ASR) {
+        self.asr = asr
+        self.silence = MLXArray([Float](repeating: 0, count: frameSize))[.newAxis, .newAxis]
+    }
+
+    public func start() {
+        text = ""
+        restarts = 0
+        pending = []
+        recent = []
+        noiseFloor = 1
+        restartModel()
+    }
+
+    /// Feeds captured audio (24 kHz mono); any chunk size works.
+    public func feed(_ pcm: [Float]) {
+        pending.append(contentsOf: pcm)
+        while pending.count >= frameSize {
+            let frame = Array(pending[0..<frameSize])
+            pending.removeFirst(frameSize)
+            step(frame)
+        }
+    }
+
+    /// Call once the recording is over to get the last words out.
+    public func finish() {
+        if !pending.isEmpty {
+            let frame = pending + [Float](repeating: 0, count: frameSize - pending.count)
+            pending = []
+            step(frame)
+        }
+        for _ in 0..<flushFrames { emit(asr.onPcmInput(silence)) }
+    }
+
+    private func step(_ frame: [Float]) {
+        let rms = (frame.reduce(0) { $0 + $1 * $1 } / Float(frame.count)).squareRoot()
+        noiseFloor = min(rms, noiseFloor * 1.02)
+        quietFrames = rms < max(0.006, noiseFloor * 3) ? quietFrames + 1 : 0
+        emit(asr.onPcmInput(MLXArray(frame)[.newAxis, .newAxis]))
+        steps += 1
+        recent.append(frame)
+        if recent.count > replayFrames { recent.removeFirst() }
+        if repeats >= loopLength {
+            // Drop the loop and start over; whatever was in flight is garbage too.
+            text = String(text.dropLast(lastToken.count * repeats))
+            restartModel()
+        } else if steps >= forceRestartAfter || (steps >= restartAfter && quietFrames >= pauseFrames) {
+            for _ in 0..<8 { emit(asr.onPcmInput(silence)) }
+            restartModel()
+            // The replayed words were already emitted before the restart: keep them out.
+            muted = true
+            for frame in recent { emit(asr.onPcmInput(MLXArray(frame)[.newAxis, .newAxis])) }
+            for _ in 0..<8 { emit(asr.onPcmInput(silence)) }
+            muted = false
+        }
+    }
+
+    private func emit(_ tokens: [String]) {
+        if muted { return }
+        for t in tokens {
+            text += t
+            if t == lastToken {
+                repeats += 1
+            } else {
+                lastToken = t
+                repeats = 1
+            }
+        }
+    }
+
+    private func restartModel() {
+        asr.reset()
+        for _ in 0..<prefixFrames { _ = asr.onPcmInput(silence) }
+        steps = 0
+        quietFrames = 0
+        lastToken = ""
+        repeats = 0
+        restarts += 1
+    }
+}

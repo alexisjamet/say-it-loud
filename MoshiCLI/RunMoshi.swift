@@ -181,16 +181,35 @@ func runAsr(_ url: URL, _ cfg: LmConfig, audioFile: URL?, channel: Int) throws {
         }
     let pcm = readAudioToPCMArray(fileURL: sampleURL, channel: channel)!
     let chunkSize = 1920
-    asr.reset()
+    let stream = StreamingASR(asr)
+    // Knobs for experiments, in seconds / frames.
+    let env = ProcessInfo.processInfo.environment
+    if let v = env["STT_RESTART_AFTER"].flatMap(Double.init) { stream.restartAfter = Int(v * 12.5) }
+    if let v = env["STT_FORCE_RESTART_AFTER"].flatMap(Double.init) { stream.forceRestartAfter = Int(v * 12.5) }
+    if let v = env["STT_REPLAY_FRAMES"].flatMap(Int.init) { stream.replayFrames = v }
+    stream.start()
+    var printed = 0
+    var restarts = stream.restarts
+    func flush() {
+        if stream.restarts != restarts {
+            restarts = stream.restarts
+            print(" ⟲", terminator: "")
+        }
+        if stream.text.count < printed {
+            print(" ✂", terminator: "")
+            printed = stream.text.count
+        }
+        print(stream.text.dropFirst(printed), terminator: "")
+        printed = stream.text.count
+        fflush(stdout)
+    }
     for start in stride(from: 0, to: pcm.count, by: chunkSize) {
         let end = min(start + chunkSize, pcm.count)
-        let pcmA = MLXArray(pcm[start..<end])[.newAxis, .newAxis]
-        let tokens = asr.onPcmInput(pcmA)
-        for token in tokens {
-            print(token, terminator: "")
-            fflush(stdout)
-        }
+        stream.feed(Array(pcm[start..<end]))
+        flush()
     }
+    stream.finish()
+    flush()
     print()
 }
 

@@ -211,9 +211,19 @@ public struct LmConfig {
         )
     }
 
+    /// The STT checkpoints attend over a 60 s window (750 frames at 12.5 Hz). Letting the
+    /// model see further than it was trained for makes it degenerate right after the first
+    /// minute; a rotating cache also keeps memory flat however long the recording is.
+    static func sttTransformer(_ cfg: TransformerConfig) -> TransformerConfig {
+        var cfg = cfg
+        cfg.context = 750
+        cfg.useRotatingKVCache = true
+        return cfg
+    }
+
     public static func asr1b() -> LmConfig {
         return LmConfig(
-            transformer: TransformerConfig.v1_1b(),
+            transformer: sttTransformer(TransformerConfig.v1_1b()),
             depformer: nil,
             textInVocabSize: 8001,
             textOutVocabSize: 8000,
