@@ -43,7 +43,7 @@ final class Lang {
 }
 
 /// Every user-facing text, in one place per language.
-struct Strings {
+struct Strings: Sendable {
     let appName = "Say It Loud"
     static let repository = URL(string: "https://github.com/alexisjamet/say-it-loud")!
 
@@ -59,11 +59,10 @@ struct Strings {
     var loadingModel: String
     var finishing: String
     var micDenied: String
-    var unexpectedModel: String
     var micFailed: String
     var listening: String
-    var failed: (String) -> String
-    var downloading: (String, String) -> String
+    var failed: @Sendable (String) -> String
+    var downloading: @Sendable (String, String) -> String
     var connecting: String
     var downloadHint: String
 
@@ -87,11 +86,29 @@ struct Strings {
     var uninstall: String
     var uninstallTitle: String
     var uninstallConfirm: String
-    var uninstallMessage: (String) -> String
+    var uninstallMessage: @Sendable (String) -> String
 
     var privacy: String
     var language: String
     var sourceCode: String
+
+    // Rewriting with the local LLM
+    var rewriting: String
+    var rewriteEmpty: String
+    var rewriteDownloadHint: @Sendable (String) -> String
+    var customTitle: String
+    var customHint: String
+    var presetFix: String
+    var presetFriend: String
+    var presetEmail: String
+    var presetBullets: String
+    var presetEnglish: String
+    var presetFrench: String
+    var customInstruction: String
+    var customPlaceholder: String
+    var apply: String
+    var back: String
+    var undoRewrite: String
 
     static let en = Strings(
         recording: "Recording",
@@ -103,7 +120,6 @@ struct Strings {
         loadingModel: "Loading model…",
         finishing: "Finishing…",
         micDenied: "Microphone access denied — allow it in Settings",
-        unexpectedModel: "Unexpected model",
         micFailed: "Could not open the microphone",
         listening: "Listening",
         failed: { "Failed: \($0)" },
@@ -126,11 +142,27 @@ struct Strings {
         uninstallTitle: "Uninstall Say It Loud?",
         uninstallConfirm: "Delete and Quit",
         uninstallMessage: {
-            "This deletes the speech model and all your transcripts (\($0)), then quits and shows the app in the Finder so you can move it to the Trash."
+            "This deletes the models and all your transcripts (\($0)), then quits and shows the app in the Finder so you can move it to the Trash."
         },
         privacy: "Everything stays on your device: the model and your transcripts are never uploaded, and no one else can access them.",
         language: "Language",
-        sourceCode: "Source code on GitHub"
+        sourceCode: "Source code on GitHub",
+        rewriting: "Rewriting…",
+        rewriteEmpty: "The model returned nothing, the text was left unchanged.",
+        rewriteDownloadHint: { "Rewriting model, \($0) GB downloaded once — it runs on this device like the speech model." },
+        customTitle: "Your instruction",
+        customHint: "Say what to do with the text: tone, length, audience, language. ⌘↩ applies.",
+        presetFix: "Fix",
+        presetFriend: "For a friend",
+        presetEmail: "Email",
+        presetBullets: "Bullet points",
+        presetEnglish: "In English",
+        presetFrench: "In French",
+        customInstruction: "Custom…",
+        customPlaceholder: "e.g. make it formal, it is for a client, and keep it under five lines",
+        apply: "Apply",
+        back: "Back",
+        undoRewrite: "Undo"
     )
 
     static let fr = Strings(
@@ -143,7 +175,6 @@ struct Strings {
         loadingModel: "Chargement du modèle…",
         finishing: "Finalisation…",
         micDenied: "Accès au micro refusé — autorisez-le dans Réglages",
-        unexpectedModel: "Modèle inattendu",
         micFailed: "Impossible d'ouvrir le micro",
         listening: "À l'écoute",
         failed: { "Échec : \($0)" },
@@ -166,10 +197,26 @@ struct Strings {
         uninstallTitle: "Désinstaller Say It Loud ?",
         uninstallConfirm: "Supprimer et quitter",
         uninstallMessage: {
-            "Cela supprime le modèle vocal et toutes vos transcriptions (\($0)), puis quitte l'app et l'affiche dans le Finder pour que vous la mettiez à la corbeille."
+            "Cela supprime les modèles et toutes vos transcriptions (\($0)), puis quitte l'app et l'affiche dans le Finder pour que vous la mettiez à la corbeille."
         },
         privacy: "Tout reste sur votre appareil : le modèle et vos transcriptions ne sont jamais envoyés, et personne d'autre n'y a accès.",
         language: "Langue",
-        sourceCode: "Code source sur GitHub"
+        sourceCode: "Code source sur GitHub",
+        rewriting: "Réécriture…",
+        rewriteEmpty: "Le modèle n'a rien renvoyé, le texte est inchangé.",
+        rewriteDownloadHint: { "Modèle de réécriture, \($0) Go téléchargé une seule fois — il tourne sur cet appareil comme le modèle vocal." },
+        customTitle: "Votre consigne",
+        customHint: "Dites quoi faire du texte : ton, longueur, destinataire, langue. ⌘↩ pour appliquer.",
+        presetFix: "Corriger",
+        presetFriend: "Pour un pote",
+        presetEmail: "Email",
+        presetBullets: "Liste à puces",
+        presetEnglish: "En anglais",
+        presetFrench: "En français",
+        customInstruction: "Consigne…",
+        customPlaceholder: "ex. vouvoie, c'est pour un client, et reste sous cinq lignes",
+        apply: "Appliquer",
+        back: "Retour",
+        undoRewrite: "Annuler"
     )
 }

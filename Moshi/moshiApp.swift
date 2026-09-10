@@ -49,7 +49,7 @@ struct moshiApp: App {
         private var menuBarSymbol: String {
             switch transcriber.phase {
             case .recording: "waveform.circle.fill"
-            case .loading, .finishing: "ellipsis.circle"
+            case .loading, .finishing, .rewriting: "ellipsis.circle"
             case .idle: "mic.fill"
             }
         }
@@ -67,8 +67,7 @@ struct moshiApp: App {
             .menuBarExtraStyle(.window)
         #else
             WindowGroup {
-                ContentView()
-                    .environment(DeviceStat())
+                SttView()
             }
         #endif
     }

@@ -15,8 +15,5 @@ run-mimi: build
 run-helium: build
 	./build/Build/Products/Release/MoshiCLI run-helium
 
-run-qwen: build
-	./build/Build/Products/Release/MoshiCLI run-qwen
-
 build:
 	xcodebuild -scheme moshi-cli -derivedDataPath ./build

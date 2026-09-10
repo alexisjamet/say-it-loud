@@ -13,7 +13,7 @@ import Synchronization
 @Observable
 @MainActor
 final class Transcriber {
-    enum Phase { case idle, loading, recording, finishing }
+    enum Phase { case idle, loading, recording, finishing, rewriting }
 
     /// One instance for the whole app: the view, the menu-bar icon and the hot key share it.
     static let shared = Transcriber()
@@ -23,14 +23,18 @@ final class Transcriber {
     var status = ""
     let ev = Evaluator()
     let history = HistoryStore.shared
+    let rewriter = Rewriter()
+    /// Text as it was before the last rewrite, so it can be undone.
+    private(set) var beforeRewrite: String?
     /// History entry the editor is currently showing, if any.
     private(set) var current: Transcript?
 
     private var mic: MicrophoneCapture?
     private var copyWhenDone = false
 
-    var isBusy: Bool { phase == .loading || phase == .finishing }
+    var isBusy: Bool { phase == .loading || phase == .finishing || phase == .rewriting }
     var download: (done: Int64, total: Int64)? { ev.download }
+    var canUndoRewrite: Bool { beforeRewrite != nil && phase == .idle }
 
     /// Mic button: a new take is appended to the text already in the editor, so a
     /// transcript can be dictated in several recordings. The clear button starts over.
@@ -75,12 +79,13 @@ final class Transcriber {
     func clear() {
         text = ""
         current = nil  // the entry stays in the history
+        beforeRewrite = nil
         if phase == .idle { status = "" }
     }
 
     /// Called by the view when the user edits the text.
     func textEdited() {
-        guard let current else { return }
+        guard let current, phase != .rewriting else { return }
         history.update(current.id, text: text)
     }
 
@@ -88,7 +93,61 @@ final class Transcriber {
         guard phase == .idle else { return }
         text = transcript.text
         current = transcript
+        beforeRewrite = nil
         status = ""
+    }
+
+    // MARK: Rewriting with the local LLM
+
+    func rewrite(_ task: RewriteTask) {
+        guard phase == .idle, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        phase = .rewriting
+        status = Lang.shared.t.loadingModel
+        Task { await runRewrite(task) }
+    }
+
+    func undoRewrite() {
+        guard let before = beforeRewrite, phase == .idle else { return }
+        text = before
+        beforeRewrite = nil
+        status = ""
+    }
+
+    func cancelRewrite() {
+        guard phase == .rewriting else { return }
+        rewriter.cancel()
+    }
+
+    private func runRewrite(_ task: RewriteTask) async {
+        let source = text
+        let result: String
+        do {
+            #if os(iOS)
+                // Not enough memory for both models on a phone: the speech model is reloaded next time.
+                ev.unloadAsr()
+            #endif
+            try await rewriter.load(ev: ev)
+            status = Lang.shared.t.rewriting
+            result = try await rewriter.run(task, on: source) { [weak self] partial in
+                guard let self, phase == .rewriting else { return }
+                text = partial
+            }
+        } catch {
+            phase = .idle
+            text = source
+            status = Lang.shared.t.failed("\(error)")
+            return
+        }
+        // Back to idle first: `textEdited()` ignores the streamed partials but must see the result.
+        phase = .idle
+        if result.isEmpty {
+            text = source
+            status = Lang.shared.t.rewriteEmpty
+        } else {
+            text = result
+            beforeRewrite = source
+            status = ""
+        }
     }
 
     func delete(_ transcript: Transcript) {
@@ -151,11 +210,10 @@ final class Transcriber {
             }
         #endif
         do {
-            let state = try await ev.load(.asr)
-            guard let model = await state.perform({ $0 as? AsrModel }) else {
-                status = Lang.shared.t.unexpectedModel
-                return
-            }
+            #if os(iOS)
+                rewriter.unload()
+            #endif
+            let asr = try await ev.loadAsr()
             let mic = MicrophoneCapture()
             self.mic = mic
             guard mic.startCapturing() else {
@@ -166,7 +224,7 @@ final class Transcriber {
             status = Lang.shared.t.listening
             setKeepAwake(true)
 
-            let heard = await runCaptureLoop(model.asr, mic: mic)
+            let heard = await runCaptureLoop(asr, mic: mic)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             let previous = text.trimmingCharacters(in: .whitespacesAndNewlines)
             text = [previous, heard].filter { !$0.isEmpty }.joined(separator: " ")
@@ -194,8 +252,10 @@ final class Transcriber {
     /// Runs the model on a dedicated thread: `mic.receive()` blocks, and MLX work
     /// should stay off the cooperative pool anyway.
     private func runCaptureLoop(_ asr: ASR, mic: MicrophoneCapture) async -> String {
+        let owned = UnsafeSendable(value: (asr, mic))
         return await withCheckedContinuation { cont in
             let thread = Thread {
+                let (asr, mic) = owned.value
                 // Restarts the model every minute or so: see `StreamingASR`.
                 let stream = StreamingASR(asr)
                 stream.start()
@@ -225,12 +285,16 @@ final class Transcriber {
 
 struct SttView: View {
     @State private var t = Transcriber.shared
+    @State private var rw = Transcriber.shared.rewriter
     @State private var lang = Lang.shared
     private var s: Strings { lang.t }
     @State private var showHistory = false
     @FocusState private var editing: Bool
 
-    private var hasText: Bool { !t.text.isEmpty && t.phase == .idle }
+    @State private var customInstruction = false
+    @FocusState private var instructionFocused: Bool
+
+    private var hasText: Bool { !t.text.isEmpty && (t.phase == .idle || t.phase == .rewriting) }
 
     var body: some View {
         VStack(spacing: 20) {
@@ -244,6 +308,9 @@ struct SttView: View {
                     t.delete(item)
                 }
                 .frame(maxWidth: 640, maxHeight: .infinity)
+            } else if customInstruction {
+                instructionPanel
+                    .frame(maxWidth: 640, maxHeight: .infinity)
             } else if hasText {
                 TextEditor(text: $t.text)
                     .font(.system(size: 17))
@@ -265,12 +332,15 @@ struct SttView: View {
                         .accessibilityLabel(s.clear)
                     }
                     .focused($editing)
+                    .disabled(t.phase == .rewriting)
                     .frame(maxWidth: 640, maxHeight: .infinity)
+                rewriteBar
+                    .frame(maxWidth: 640)
             } else {
                 Spacer()
             }
 
-            if !showHistory {
+            if !showHistory && !customInstruction {
             HStack(spacing: 24) {
                 sideButton("doc.on.doc", label: s.copy, enabled: hasText) { t.copy() }
                 micButton
@@ -288,7 +358,7 @@ struct SttView: View {
             }
 
 
-            if !hasText && !showHistory { Spacer() }
+            if !hasText && !showHistory && !customInstruction { Spacer() }
 
             privacyNote
         }
@@ -369,6 +439,102 @@ struct SttView: View {
         .padding(.top, 4)
     }
 
+    /// Presets under the editor: one tap rewrites the text with the local LLM.
+    @ViewBuilder
+    private var rewriteBar: some View {
+        if t.phase == .rewriting {
+            HStack(spacing: 10) {
+                ProgressView().controlSize(.small)
+                Spacer()
+                chip("xmark", s.stop) { t.cancelRewrite() }
+            }
+            .frame(height: 30)
+        } else {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    if t.canUndoRewrite {
+                        chip("arrow.uturn.backward", s.undoRewrite) { t.undoRewrite() }
+                    }
+                    ForEach(RewritePreset.allCases) { p in
+                        chip(p.symbol, p.label(s)) { t.rewrite(p.task) }
+                    }
+                    chip("ellipsis", s.customInstruction) { editing = false; customInstruction = true }
+                }
+                .padding(.horizontal, 2)
+            }
+            .frame(height: 30)
+        }
+    }
+
+    /// Full-height panel for a free-form instruction: the transcript makes way for a
+    /// large editor, so a long consigne stays readable.
+    private var instructionPanel: some View {
+        let empty = rw.customInstruction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        return VStack(alignment: .leading, spacing: 10) {
+            Text(s.customTitle)
+                .font(.headline)
+            TextEditor(text: $rw.customInstruction)
+                .font(.system(size: 17))
+                .scrollContentBackground(.hidden)
+                .padding(12)
+                .background(RoundedRectangle(cornerRadius: 14).fill(Color.field))
+                .overlay(alignment: .topLeading) {
+                    if empty {
+                        Text(s.customPlaceholder)
+                            .font(.system(size: 17))
+                            .foregroundStyle(.tertiary)
+                            .padding(.horizontal, 17)
+                            .padding(.vertical, 20)
+                            .allowsHitTesting(false)
+                    }
+                }
+                .focused($instructionFocused)
+                .frame(minHeight: 120, maxHeight: .infinity)
+            Text(s.customHint)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack {
+                chip("chevron.left", s.back) { customInstruction = false }
+                Spacer()
+                Button(action: submitCustom) {
+                    Label(s.apply, systemImage: "sparkles")
+                        .font(.footnote.weight(.semibold))
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 7)
+                        .background(Capsule().fill(Color.accentColor))
+                        .foregroundStyle(.white)
+                }
+                .buttonStyle(.plain)
+                .keyboardShortcut(.return, modifiers: .command)
+                .disabled(empty)
+                .opacity(empty ? 0.4 : 1)
+            }
+        }
+        .onAppear { instructionFocused = true }
+    }
+
+    private func submitCustom() {
+        let i = t.rewriter.customInstruction.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !i.isEmpty else { return }
+        customInstruction = false
+        editing = false
+        t.rewrite(.custom(i))
+    }
+
+    private func chip(_ symbol: String, _ label: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Label(label, systemImage: symbol)
+                .font(.footnote)
+                .lineLimit(1)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(Capsule().fill(Color.field))
+                .overlay(Capsule().strokeBorder(Color.hairline, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+    }
+
     private var micButton: some View {
         #if os(macOS)
             let size: CGFloat = hasText ? 72 : 140
@@ -415,7 +581,7 @@ struct SttView: View {
 
     @ViewBuilder
     private var statusLine: some View {
-        if let d = t.download, t.phase == .loading {
+        if let d = t.download, t.phase == .loading || t.phase == .rewriting {
             VStack(spacing: 6) {
                 if d.total > 0 {
                     ProgressView(value: Double(d.done), total: Double(d.total))
@@ -430,7 +596,7 @@ struct SttView: View {
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
-                Text(s.downloadHint)
+                Text(t.phase == .rewriting ? s.rewriteDownloadHint(Rewriter.sizeGB) : s.downloadHint)
                     .multilineTextAlignment(.center)
                     .font(.caption2)
                     .foregroundStyle(.tertiary)

@@ -6,17 +6,17 @@ import MLX
 import MLXFast
 import MLXNN
 
-public enum Norm {
+public enum Norm: Sendable {
     case layerNorm
     case rmsNorm
 }
 
-public enum PositionalEmbedding {
+public enum PositionalEmbedding: Sendable {
     case none
     case rope
 }
 
-public struct TransformerConfig {
+public struct TransformerConfig: Sendable {
     public var dModel: Int
     public var numHeads: Int
     public var numLayers: Int

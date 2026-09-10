@@ -7,6 +7,23 @@ On-device speech-to-text for macOS and iOS, built on Kyutai's
 Everything stays on your device: the model (about 1.4 GB, downloaded once from
 Hugging Face) and your transcripts are never uploaded.
 
+## Rewriting with a local LLM
+
+Once a transcript is on screen, a row of presets rewrites it on device with a
+small LLM (MLX, 4-bit): fix punctuation and filler words, shorten it for a
+friend, turn it into an email or a bulleted list, translate to English or
+French, or type your own instruction. Undo restores the dictated text. The
+model, Ministral 3 3B (about 2.7 GB, French-native), is downloaded on first
+use. On iPhone the speech model is unloaded while the LLM runs, and reloaded
+for the next recording.
+
+The same pipeline can be tried from the command line:
+
+```
+xcodebuild -scheme moshi-cli -derivedDataPath build
+build/Build/Products/Release/MoshiCLI run-rewrite --task email "euh bonjour je voulais dire que…"
+```
+
 ## macOS
 
 Say It Loud lives in the menu bar, with no window and no Dock icon.
@@ -24,7 +41,8 @@ Transcripts are kept in a local history.
 ## Building
 
 Open `moshi.xcodeproj` in Xcode and run the `Moshi` scheme on a Mac or an
-iPhone. Signing uses your own team; the bundle identifier is
+iPhone. The project builds in Swift 6 language mode (strict concurrency).
+Signing uses your own team; the bundle identifier is
 `com.alexisjamet.sil`, change it to yours.
 
 The iOS build is deliberately not offered to Macs ("Designed for iPad" is

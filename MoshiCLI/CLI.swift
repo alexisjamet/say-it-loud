@@ -9,7 +9,29 @@ import Hub
 import MLX
 import MLXNN
 import MoshiLib
+import Synchronization
 import Tokenizers
+
+/// Runs an async job from the synchronous command entry points.
+func runBlocking<T>(_ body: @escaping @Sendable () async throws -> T) throws -> T {
+    let result = Mutex<Result<UnsafeSendable<T>, Error>?>(nil)
+    let semaphore = DispatchSemaphore(value: 0)
+    Task.detached {
+        do {
+            let value = try await body()
+            result.withLock { $0 = .success(UnsafeSendable(value: value)) }
+        } catch {
+            result.withLock { $0 = .failure(error) }
+        }
+        semaphore.signal()
+    }
+    semaphore.wait()
+    return try result.withLock { $0! }.get().value
+}
+
+struct UnsafeSendable<T>: @unchecked Sendable {
+    let value: T
+}
 
 func downloadFromHub(id: String, filename: String) throws -> URL {
     let targetURL = HubApi().localRepoLocation(Hub.Repo(id: id)).appending(path: filename)
@@ -17,23 +39,14 @@ func downloadFromHub(id: String, filename: String) throws -> URL {
         print("using cached file \(targetURL.path)")
         return targetURL
     }
-    var url: URL? = nil
-    let semaphore = DispatchSemaphore(value: 0)
-    Task {
-        let repo = Hub.Repo(id: id)
-        do {
-            url = try await Hub.snapshot(from: repo, matching: filename) { progress in
-                let pct = Int(progress.fractionCompleted * 100)
-                print("\rretrieving \(filename): \(pct)%", terminator: "")
-            }
-        } catch {
-            fatalError("cannot fetch \(id) \(filename): \(error)")
+    let url = try runBlocking {
+        try await Hub.snapshot(from: Hub.Repo(id: id), matching: filename) { progress in
+            let pct = Int(progress.fractionCompleted * 100)
+            print("\rretrieving \(filename): \(pct)%", terminator: "")
         }
-        semaphore.signal()
     }
-    semaphore.wait()
     print("\rretrieved \(filename)")
-    return url!.appending(path: filename)
+    return url.appending(path: filename)
 }
 
 func maybeDownloadFromHub(filename: String) throws -> URL {
@@ -51,18 +64,7 @@ func maybeDownloadFromHub(filename: String) throws -> URL {
 }
 
 func makeTokenizer(hfRepo: String) throws -> any Tokenizer {
-    var tokenizer: (any Tokenizer)? = nil
-    let semaphore = DispatchSemaphore(value: 0)
-    Task {
-        do {
-            tokenizer = try await AutoTokenizer.from(pretrained: hfRepo)
-        } catch {
-            fatalError("cannot build tokenizer \(error)")
-        }
-        semaphore.signal()
-    }
-    semaphore.wait()
-    return tokenizer!
+    try runBlocking { try await AutoTokenizer.from(pretrained: hfRepo) }
 }
 
 @main
@@ -70,7 +72,7 @@ struct Moshi: ParsableCommand {
     static let configuration = CommandConfiguration(
         subcommands: [
             Run.self, RunHelium.self, RunMimi.self, AudioToCodes.self, CodesToAudio.self,
-            RunAsr.self, RunQwen.self,
+            RunAsr.self, RunRewrite.self,
         ]
     )
 }
@@ -139,68 +141,6 @@ public enum HeliumConfig: String, CaseIterable, ExpressibleByArgument {
     case bf16
 }
 
-struct RunQwen: ParsableCommand {
-    @Option(help: "the config")
-    var hfRepo: String = "Qwen/Qwen2.5-0.5B-Instruct"
-
-    @Option(help: "the prompt to be used")
-    var prompt: String = "Describe the swift programming language."
-
-    @Option(help: "the number of tokens to generate")
-    var n: Int = 256
-
-    mutating func run() throws {
-        let tokenizer = try makeTokenizer(hfRepo: hfRepo)
-        let messages = [["role": "user", "content": prompt]]
-        let encodedPrompt = try tokenizer.applyChatTemplate(messages: messages)
-        let configUrl = try downloadFromHub(id: hfRepo, filename: "config.json")
-        let configData = try Data(contentsOf: configUrl)
-        let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
-        let config = try decoder.decode(QwenConfig.self, from: configData)
-        print("config \(config)")
-        let modelUrl = try downloadFromHub(id: hfRepo, filename: "model.safetensors")
-        print("model \(modelUrl)")
-        let weights = try loadArrays(url: modelUrl)
-        guard let modelItem = ModuleParameters.unflattened(weights)["model"] else {
-            fatalError("no model key in {configUrl}")
-        }
-        let parameters =
-            switch modelItem {
-            case .dictionary(let d): NestedDictionary(values: d)
-            default: fatalError("model key in {configUrl} is not a dict")
-            }
-
-        let model = QwenModel(config)
-        if let q = config.quantization {
-            quantize(model: model, groupSize: q.groupSize, bits: q.bits)
-        }
-        try model.update(parameters: parameters, verify: [.all])
-        eval(model)
-        let cache = model.makeCache(bSize: 1)
-        let sampler = Sampler()
-        var lastToken = config.bosTokenId
-        let startTime = CFAbsoluteTimeGetCurrent()
-        var nTokens = 0
-        for index in 0...(n + prompt.count) {
-            let logits = model(MLXArray([lastToken]).reshaped(1, 1), cache: cache)
-            if index < encodedPrompt.count {
-                lastToken = encodedPrompt[index]
-            } else {
-                let (tok, _) = sampler(logits: logits[0])
-                lastToken = tok.item<Int>()
-            }
-            let s = tokenizer.decode(tokens: [lastToken])
-            print("\(s)", terminator: "")
-            fflush(stdout)
-            nTokens += 1
-        }
-        print()
-        let elapsedTime = CFAbsoluteTimeGetCurrent() - startTime
-        print("\(nTokens) tokens generated, \(Double(nTokens) / elapsedTime) tok/s")
-    }
-}
-
 struct RunHelium: ParsableCommand {
     @Option(help: "the config")
     var config: HeliumConfig = .q4
@@ -266,3 +206,53 @@ struct RunAsr: ParsableCommand {
         }
     }
 }
+
+struct RunRewrite: ParsableCommand {
+    @Option(help: "the Hugging Face repo of the mlx-community Ministral 3 checkpoint")
+    var hfRepo: String = "mlx-community/Ministral-3-3B-Instruct-2512-4bit"
+
+    @Option(help: "fix, friend, email, bullets, english, french, or a free instruction")
+    var task: String = "fix"
+
+    @Argument(help: "the text to rewrite")
+    var text: String
+
+    mutating func run() throws {
+        for f in ["config.json", "tokenizer_config.json", "tokenizer.json", "model.safetensors"] {
+            _ = try downloadFromHub(id: hfRepo, filename: f)
+        }
+        let folder = HubApi().localRepoLocation(Hub.Repo(id: hfRepo))
+        let tokenizer = try LlmTokenizer.load(from: folder)
+        let task: RewriteTask =
+            switch self.task {
+            case "fix": .fix
+            case "friend": .friend
+            case "email": .email
+            case "bullets": .bullets
+            case "english": .toEnglish
+            case "french": .toFrench
+            case let s: .custom(s)
+            }
+        let t0 = CFAbsoluteTimeGetCurrent()
+        let model = try LlmModel.load(from: folder)
+        print("model loaded in \(CFAbsoluteTimeGetCurrent() - t0)s")
+        let prompt = tokenizer.encode(text: task.prompt(for: text), addSpecialTokens: false)
+        let gen = LlmGenerator(model)
+        var out: [Int] = []
+        var shown = ""
+        let t1 = CFAbsoluteTimeGetCurrent()
+        gen.generate(prompt: prompt) { tok in
+            out.append(tok)
+            let text = tokenizer.decode(tokens: out, skipSpecialTokens: true)
+            if text.hasPrefix(shown) {
+                print(text.dropFirst(shown.count), terminator: "")
+                shown = text
+            }
+            fflush(stdout)
+            return true
+        }
+        let dt = CFAbsoluteTimeGetCurrent() - t1
+        print("\n\(prompt.count) prompt tokens, \(out.count) generated in \(dt)s (\(Double(out.count) / dt) tok/s)")
+    }
+}
+

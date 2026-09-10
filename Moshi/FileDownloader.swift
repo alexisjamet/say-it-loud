@@ -7,14 +7,14 @@ final class FileDownloader: NSObject, URLSessionDownloadDelegate {
     private let onProgress: (Int64, Int64) -> Void
     private var continuation: CheckedContinuation<Void, Error>?
 
-    private init(destination: URL, onProgress: @escaping (Int64, Int64) -> Void) {
+    private init(destination: URL, onProgress: @escaping @Sendable (Int64, Int64) -> Void) {
         self.destination = destination
         self.onProgress = onProgress
     }
 
     /// Downloads `url` to `destination` (atomically: the file only appears once complete).
     static func download(
-        _ url: URL, to destination: URL, onProgress: @escaping (Int64, Int64) -> Void
+        _ url: URL, to destination: URL, onProgress: @escaping @Sendable (Int64, Int64) -> Void
     ) async throws {
         let delegate = FileDownloader(destination: destination, onProgress: onProgress)
         let config = URLSessionConfiguration.default
