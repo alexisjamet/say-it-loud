@@ -138,7 +138,7 @@ final class Rewriter {
 
     /// Strips a thinking block if the model produced one anyway, a trailing
     /// parenthesized note ("(Note: …)"), markdown bold, and surrounding quotes.
-    static func clean(_ s: String) -> String {
+    nonisolated static func clean(_ s: String) -> String {
         var t = s
         if let r = t.range(of: "</think>") { t = String(t[r.upperBound...]) }
         t = t.replacingOccurrences(of: "**", with: "")
